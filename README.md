@@ -1,4 +1,4 @@
-# KiraAI-qqbot-fullmsg-bridge-plugin/QQ官方bot增强 v1.5.0
+# KiraAI-qqbot-fullmsg-bridge-plugin/QQ官方bot增强 v1.5.1
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/znq19/KiraAI-qqbot-fullmsg-bridge-plugin)
 
@@ -448,6 +448,75 @@ KIRA_CORE=/path/to/kira_fw BOTPY_PATH=/path/to/botpy python3 tests/smoke_real_co
 ## 更新日志
 
 <details open>
+<summary><b>v1.5.1</b> — ★ 修掉图片转存的致命 bug：分片拼装偏移算错（这正是 850019 的来源）</summary>
+
+### 现象（你给的日志）
+
+```
+[botpy] 接口请求异常，请求连接: https://api.sgroup.qq.com/v2/users/.../files
+错误代码: 400, {'message': '富媒体文件格式不支持', 'code': 850019}
+```
+
+图**还是** alt 文字 —— 因为**我们自己的转存失败了**，md 里的地址没换掉。
+
+### 根因：我的分片偏移算错了（v1.5.0 引入）
+
+第一版写成：
+
+```python
+chunk = data[idx * bsize : (idx + 1) * bsize]     # ✗ 错
+```
+
+而**每个分片的 `block_size` 不都一样** —— 官方默认 5 MB 一块，
+**最后一块是剩下的零头**。例如 12 MB 的文件 ⇒ `[5MB, 5MB, 2MB]`：
+
+```
+idx=0 → data[0 : 5MB]         ✓
+idx=1 → data[5MB : 10MB]      ✓
+idx=2 → data[2*2MB : 3*2MB]   ✗ 应该是 data[10MB : 12MB]
+```
+
+⇒ **拼出来的文件是坏的** ⇒ 平台合并后校验格式失败 ⇒ `400 / 850019`。
+
+### 修法
+
+* **按 `index` 排序 + 用各自 `block_size` 累加偏移**（平台不保证分片顺序）；
+* 上传前做一次**完整性自检**：拼出来必须跟原文件**一字不差**，
+  长度对不上就**宁可不传**（传个坏文件只会换来一个看不懂的平台错误）。
+
+### ⚠ 一个差点漏掉这个 bug 的教训
+
+我第一版测试用 `bytes(range(256)) * N` 造数据 —— **周期是 256 字节**，
+错误的偏移**碰巧**能对上，测试反而**全绿**。
+第二次换成 64 KB 块重复，**又**撞上（错误偏移差常常正好是 64 KB 的整数倍）。
+
+⇒ 现在测试用**真随机**数据（`random.randbytes`），并**显式断言"旧算法必须拼错"**
+（反向验证：测试真的能抓到这个 bug）。
+
+`tests/audit_chunk_assembly.py`（**13 断言**）：单分片 / 整块 / 尾块零头 /
+三块（线上踩坑形状）/ **乱序分片** —— 全部要求逐字节一致。
+
+### 顺带：转存失败现在**可见**了
+
+原来失败只打 `debug`（日志里什么都看不到）⇒ 你只会看到"图片又不显示"，
+根本无从排查。现在会打一条 **WARNING**，写明原因并请把日志反馈。
+
+### 顺带：热路径性能
+
+新增的「标签剥壳 / md 识别」放在**每条消息都过**的热路径上，
+初版把纯文本提取从 ~1 µs 拖到 5.7 µs。
+已加**廉价预筛**（无 `<` / 无 md 触发字符就直接返回）：
+
+```
+修复前：5.727 µs/次   ✗（测试红了）
+修复后：0.722 µs/次   ✓  —— 比加代码之前还快
+```
+
+**双世代全量：2.x ALL PASSED ／ 3.0 ALL PASSED。**
+
+</details>
+
+<details>
 <summary><b>v1.5.0</b> — ★ 图片/视频/语音/标签 四件事一起修好（md 格式始终零改动）</summary>
 
 ### 1. 图片：**远程图也转存到 QQ 自己的 COS**（不只是"验真"）

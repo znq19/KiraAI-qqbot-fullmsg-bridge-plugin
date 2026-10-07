@@ -246,33 +246,54 @@ async def _upload_bytes_to_qq(
             return None
 
         import aiohttp
-        async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=60)) as sess:
-            for part in parts:
-                idx = _get(part, "index")
-                purl = _get(part, "presigned_url")
-                bsize = int(_get(part, "block_size") or 0)
-                if idx is None or not purl:
-                    continue
-                if bsize <= 0:
-                    bsize = max(1, size // max(1, len(parts)))
-                chunk = data[idx * bsize:(idx + 1) * bsize]
-                async with sess.put(purl, data=chunk) as r:
-                    if r.status >= 300:
-                        if logger is not None:
-                            logger.debug("[QQBOT-BRIDGE] 分片 %s PUT 失败: %s", idx, r.status)
-                        return None
-                await _route_request(api, finish_route, json={
-                    "upload_id": upload_id,
-                    "part_index": idx,
-                    "block_size": str(len(chunk)),
-                    "md5": hashlib.md5(chunk).hexdigest(),
-                })
+        # ★★★ 分片必须**按 index 排序、用各自 block_size 累加偏移**。
+        #
+        #   踩过的坑（2026-10-07 线上 850019「富媒体文件格式不支持」）：
+        #   原来写成 `chunk = data[idx * bsize:(idx+1)*bsize]`，而**最后一片的
+        #   block_size 比前面小**（例：12 MB 文件按 5 MB 分片 ⇒ [5MB, 5MB, 2MB]），
+        #   第 2 片就会算成 `data[4MB:6MB]`（应该是 10MB 起）⇒ 拼出来的文件是坏的
+        #   ⇒ 平台合并后校验格式失败，回 400 / 850019，图还是显示不出来。
+        ordered = [p for p in parts if _get(p, "index") is not None]
+        ordered.sort(key=lambda p: int(_get(p, "index")))
+        offset = 0
+        for part in ordered:
+            idx = int(_get(part, "index"))
+            purl = _get(part, "presigned_url")
+            bsize = int(_get(part, "block_size") or 0)
+            if not purl:
+                continue
+            # bsize<=0 时按「剩下的全部」兜底（不该发生，但不至于拼错）
+            chunk = data[offset:offset + bsize] if bsize > 0 else data[offset:]
+            if not chunk:
+                break
+            offset += len(chunk)
+            async with sess.put(purl, data=chunk) as r:
+                if r.status >= 300:
+                    if logger is not None:
+                        logger.debug("[QQBOT-BRIDGE] 分片 %s PUT 失败: %s", idx, r.status)
+                    return None
+            await _route_request(api, finish_route, json={
+                "upload_id": upload_id,
+                "part_index": idx,
+                "block_size": str(len(chunk)),
+                "md5": hashlib.md5(chunk).hexdigest(),
+            })
+
+        # ★ 完整性自检：拼出来的必须和原文件一字不差，否则**宁可不传**
+        #   （传个坏文件上去只会换来一个看不懂的平台错误）。
+        if offset != len(data):
+            if logger is not None:
+                logger.warning(
+                    "[QQBOT-BRIDGE] 分片拼装不完整（%s/%s 字节），已放弃转存，按原样发送",
+                    offset, len(data),
+                )
+            return None
 
         merged = await _route_request(api, files_route, json={
             "file_type": 1,
             "srv_send_msg": False,
             "file_name": name,
+            "url": "",              # 分片合并路径可留空，但字段要带上
             "upload_id": upload_id,
         })
         raw = _get(merged, "raw_url")
@@ -284,8 +305,16 @@ async def _upload_bytes_to_qq(
             logger.debug("[QQBOT-BRIDGE] 合并响应没有 raw_url: %s", merged)
         return None
     except Exception as exc:
+        # ★ 这条**必须可见**（原来是 debug）：
+        #   转存失败 ⇒ 图还是 alt 文字。若不提示，用户只会看到"图片又不显示"，
+        #   然后来问"为什么"——而日志里什么都没有。线上就被这个坑过一次
+        #   （`400 / 850019 富媒体文件格式不支持`，因为分片拼装错了）。
         if logger is not None:
-            logger.debug("[QQBOT-BRIDGE] 分片上传失败: %s: %s", type(exc).__name__, exc)
+            logger.warning(
+                "[QQBOT-BRIDGE] 图片转存到 QQ 失败（%s: %s）—— 本条图片按原地址发送，"
+                "QQ 可能仍显示成 alt 文字；若持续如此请把本条连同日志反馈",
+                type(exc).__name__, str(exc)[:160],
+            )
         return None
 
 

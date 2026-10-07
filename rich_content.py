@@ -156,6 +156,10 @@ _RAW_MD_OPEN = re.compile(r"<\s*markdown\s*>", re.I)
 _RAW_MD_CLOSE = re.compile(r"<\s*/\s*markdown\s*>", re.I)
 
 
+#: markdown 的「触发字符」——没有这些就绝不可能是 markdown（快速排除用）
+_MD_HINT = re.compile(r"[#\-*+.!>~`|]")
+
+
 def unwrap_markdown_tags(text: str) -> str:
     """把正文里**被转义或裸写**的 `<markdown>` 标签剥掉。
 
@@ -169,9 +173,14 @@ def unwrap_markdown_tags(text: str) -> str:
     标签里的尖括号被转义成 `&lt;`，解析器就只当它是普通文字 ⇒
     **整条消息的 markdown 全不渲染**（标题、链接都变成原文）。
     这里把外层这层壳剥掉，正文照常按 markdown 发。
+
+    ⚠ 这是**发送热路径**（每条消息都过），所以先做一次极廉价的子串检查：
+    正文里既没有 `&lt;` 也没有 `<` 时直接原样返回，一次正则都不跑。
     """
     if not text:
         return text
+    if "&lt;" not in text and "<" not in text:
+        return text                      # ← 绝大多数消息走这里，零正则开销
     out = _ESCAPED_MD_OPEN.sub("", text)
     out = _ESCAPED_MD_CLOSE.sub("", out)
     out = _RAW_MD_OPEN.sub("", out)
@@ -184,9 +193,14 @@ def looks_like_markdown(text: str) -> bool:
 
     只认**明确的** markdown 特征，避免把普通聊天文本误判成 markdown
     （误判会让本该纯文本的消息变成 md，影响 @ 解析等）。
+
+    ⚠ 同样是热路径：先用一个字符类快速排除（普通聊天不含 `# - * > ! . ~`），
+    命不中就直接 False，不跑那 6 条正则。
     """
     if not text:
         return False
+    if not _MD_HINT.search(text):
+        return False                     # ← 普通聊天走这里，零正则开销
     if re.search(r"^#{1,6}\s+\S", text, re.M):
         return True
     if re.search(r"^\s*[-*+]\s+\S", text, re.M) or re.search(r"^\s*\d+\.\s+\S", text, re.M):
