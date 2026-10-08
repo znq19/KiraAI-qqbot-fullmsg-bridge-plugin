@@ -253,31 +253,45 @@ async def _upload_bytes_to_qq(
         #   block_size 比前面小**（例：12 MB 文件按 5 MB 分片 ⇒ [5MB, 5MB, 2MB]），
         #   第 2 片就会算成 `data[4MB:6MB]`（应该是 10MB 起）⇒ 拼出来的文件是坏的
         #   ⇒ 平台合并后校验格式失败，回 400 / 850019，图还是显示不出来。
+        #
+        # ★ 2026-10-08 又踩一次：修上面这个 bug 时，把 `async with ... as sess`
+        #   那行连同旧循环一起删掉了，却没补回来 ⇒ 运行时 `NameError: name 'sess'
+        #   is not defined` ⇒ **图片转存整条链路全废**（用户日志抓到的）。
+        #   教训：**改缩进/搬代码块时，一定要确认外层上下文（with / try / 变量）
+        #   还在**，光看语法通过没用 —— NameError 是运行时才炸的。
         ordered = [p for p in parts if _get(p, "index") is not None]
         ordered.sort(key=lambda p: int(_get(p, "index")))
+        # ★ 分片 index **可能不从 0 开始**（AstrBot 用 `part_index_base = min(index)`
+        #   来算偏移，说明平台不保证从 0 起）。按基准值算偏移更稳。
+        base = int(_get(ordered[0], "index")) if ordered else 0
         offset = 0
-        for part in ordered:
-            idx = int(_get(part, "index"))
-            purl = _get(part, "presigned_url")
-            bsize = int(_get(part, "block_size") or 0)
-            if not purl:
-                continue
-            # bsize<=0 时按「剩下的全部」兜底（不该发生，但不至于拼错）
-            chunk = data[offset:offset + bsize] if bsize > 0 else data[offset:]
-            if not chunk:
-                break
-            offset += len(chunk)
-            async with sess.put(purl, data=chunk) as r:
-                if r.status >= 300:
-                    if logger is not None:
-                        logger.debug("[QQBOT-BRIDGE] 分片 %s PUT 失败: %s", idx, r.status)
-                    return None
-            await _route_request(api, finish_route, json={
-                "upload_id": upload_id,
-                "part_index": idx,
-                "block_size": str(len(chunk)),
-                "md5": hashlib.md5(chunk).hexdigest(),
-            })
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=120)) as sess:
+            for part in ordered:
+                idx = int(_get(part, "index"))
+                purl = _get(part, "presigned_url")
+                bsize = int(_get(part, "block_size") or 0)
+                if not purl:
+                    continue
+                # bsize<=0 时按「剩下的全部」兜底（不该发生，但不至于拼错）
+                chunk = data[offset:offset + bsize] if bsize > 0 else data[offset:]
+                if not chunk:
+                    break
+                offset += len(chunk)
+                async with sess.put(purl, data=chunk) as r:
+                    if r.status >= 300:
+                        if logger is not None:
+                            logger.warning(
+                                "[QQBOT-BRIDGE] 图片分片 %s 上传失败：HTTP %s",
+                                idx, r.status,
+                            )
+                        return None
+                await _route_request(api, finish_route, json={
+                    "upload_id": upload_id,
+                    "part_index": idx,
+                    "block_size": str(len(chunk)),
+                    "md5": hashlib.md5(chunk).hexdigest(),
+                })
 
         # ★ 完整性自检：拼出来的必须和原文件一字不差，否则**宁可不传**
         #   （传个坏文件上去只会换来一个看不懂的平台错误）。
