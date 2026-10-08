@@ -1,4 +1,4 @@
-# KiraAI-qqbot-fullmsg-bridge-plugin/QQ官方bot增强 v1.5.2
+# KiraAI-qqbot-fullmsg-bridge-plugin/QQ官方bot增强 v1.5.3
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/znq19/KiraAI-qqbot-fullmsg-bridge-plugin)
 
@@ -448,6 +448,65 @@ KIRA_CORE=/path/to/kira_fw BOTPY_PATH=/path/to/botpy python3 tests/smoke_real_co
 ## 更新日志
 
 <details open>
+<summary><b>v1.5.3</b> — ★ 修掉「图片转存全线失败」的致命回归（sess 未定义）+ 分片基准值健壮性</summary>
+
+### 1. 图片转存**整条链路全废** —— 名字写错了
+
+你日志里这一行是决定性的：
+
+```
+WARNING 图片转存到 QQ 失败（NameError: name 'sess' is not defined）
+```
+
+**根因**：v1.5.1 我修分片偏移 bug 时，改动了那段循环的缩进 ——
+把 `async with aiohttp.ClientSession(...) as sess:` 这一行**连带删掉了**，
+却没补回来。循环里还在用 `sess.put(...)`。
+
+⇒ **语法检查通不出问题**（AST 完全合法），要**真跑一遍**才炸
+⇒ 所有图片转存 100% 失败 ⇒ md 里的图**全部**退化成 alt 文字。
+
+**修**：补回 `async with aiohttp.ClientSession(...) as sess:`，循环体正确缩进。
+
+**新增测试 `tests/audit_upload_live.py`（5 断言）**：**真跑** `_upload_bytes_to_qq`
+（用真 `Route`、真排序、真累加偏移、真完整性自检，只把 `sess.put` 换成记录调用），
+断言「不抛异常 + 拿到 raw_url + 分片总字节 == 原文件 + 乱序也对」。
+
+> **教训**：`NameError` 这类错误**语法检查抓不到** ——
+> 凡是「改缩进 / 搬代码块」的改动，光看 AST 通过没用，**必须真跑一次**。
+
+### 2. 分片 index 的基准值
+
+对照成熟实现（AstrBot）发现它用 `part_index_base = min(index)` 来算偏移，
+说明**平台不保证分片 index 从 0 开始**。已按基准值算偏移（更稳）。
+
+### 3. 语音条：`file_type=3` 是对的，卡在**格式**
+
+已确认我们的链路完全正确（双世代实测）：
+
+```
+Record(mp3)  → 上传 file_type=[3]
+Video(mp4)   → 上传 file_type=[2]
+```
+
+但官方「文件类型与限制」表写的是 **`3 语音 silk`** ——
+**只认 silk**，而 `Just Be Friends….mp3`（4.6 MB）是 **mp3**。
+平台收下后按"不认识的语音格式"处理 ⇒ 落成**文件卡片**。
+
+你的机器上 `where ffmpeg` **失败**（没有 ffmpeg），所以插件侧做不了
+mp3→silk 转码。**这是目前唯一没解决的**，需要你决定：
+
+* 装 ffmpeg（或让框架带一个），我们就能转；或
+* 接受"语音按文件发"的现状（其它平台/格式不受影响）。
+
+### 测试
+
+`tests/audit_upload_live.py`（5）—— 真跑上传全链路，专抓这类运行时错误。
+
+**双世代全量：2.x ALL PASSED ／ 3.0 ALL PASSED。**
+
+</details>
+
+<details>
 <summary><b>v1.5.2</b> — ★ 语音/视频终于发得出去 + 图片下载器带上真 UA 与说人话的失败日志</summary>
 
 ### 1. `<file type="record">` 发出去变成 `[Unsupported message element]`
