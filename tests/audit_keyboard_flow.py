@@ -384,5 +384,43 @@ try:
 except Exception as exc:
     check("★ 结构自检无异常", False, f"{type(exc).__name__}: {exc}")
 
+print("\n[B7] ★ 指令按钮默认 enter:true（点一下就发）；显式 false 保留；回调按钮不动")
+
+import rich_content as RC2  # noqa: E402
+
+_kb_enter = ('{"content":{"rows":[{"buttons":['
+             '{"id":"a","render_data":{"label":"点歌","style":1},'
+             '"action":{"type":2,"data":"/点歌","permission":{"type":2}}},'
+             '{"id":"b","render_data":{"label":"手动","style":1},'
+             '"action":{"type":2,"data":"/手动","enter":false,"permission":{"type":2}}},'
+             '{"id":"c","render_data":{"label":"回调","style":1},'
+             '"action":{"type":1,"data":"cb","permission":{"type":2}}}]}]}}')
+_pay = RC2.validate_keyboard(_kb_enter)
+_btns = _pay["content"]["rows"][0]["buttons"]
+check("★★ 未写 enter 的指令按钮 ⇒ 自动补 enter:true",
+      _btns[0]["action"].get("enter") is True, str(_btns[0]["action"]))
+check("★ 显式 enter:false **不覆盖**（尊重模型的意图）",
+      _btns[1]["action"].get("enter") is False, str(_btns[1]["action"]))
+check("★ 回调按钮（type=1）不动（加 enter 无意义）",
+      "enter" not in _btns[2]["action"], str(_btns[2]["action"]))
+_stats = RC2.apply_button_defaults(_pay)
+check("★ 统计：本条有 1 个回调按钮（用于日志提示）",
+      _stats["callback"] == 1, str(_stats))
+RC2.set_auto_enter(False)
+_pay2 = RC2.validate_keyboard(_kb_enter)
+check("★★ 关掉 keyboard_auto_enter ⇒ 不注入 enter（保留官方默认行为）",
+      "enter" not in _pay2["content"]["rows"][0]["buttons"][0]["action"],
+      str(_pay2["content"]["rows"][0]["buttons"][0]["action"]))
+RC2.set_auto_enter(True)
+
+print("\n[B8] ★ 含回调按钮时给一次性说明（排查「请求第三方失败」）")
+api = FakeAPI()
+sent, log = asyncio.run(send(api, kb=RC2.validate_keyboard(_kb_enter), content="回调测试"))
+check("★ 发出了 WARNING 说明回调按钮的依赖",
+      any("回调按钮" in m and lv == "warning" for lv, m in log.lines),
+      str([m for lv, m in log.lines if "回调" in m][:1]))
+check("★ 说明里给出了替代方案（type=2 + enter）",
+      any("type=2" in m and "enter" in m for _lv, m in log.lines))
+
 print(f"\n结果：{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

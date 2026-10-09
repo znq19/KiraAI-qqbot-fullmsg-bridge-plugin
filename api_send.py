@@ -318,6 +318,33 @@ class ApiSendPatcher:
                 _kb_reason = "upgraded"
             elif kwargs.get("media") or int(kwargs.get("msg_type") or 0) == 7:
                 _kb_reason = "with_media"
+            # ★ 2026-10-10：本条含**回调按钮**（type=1）时给一次说明 ——
+            #   回调按钮要平台能把互动事件推给机器人（长连接已订阅 INTERACTION）。
+            #   若开放平台后台把"消息推送方式"设成 Webhook 而地址不可达，
+            #   用户点按钮会看到「请求第三方失败」。点一下就发的替代方案是
+            #   type=2 指令按钮（插件默认已加 enter:true）。
+            try:
+                _kb_rows = ((keyboard or {}).get("content") or {}).get("rows") or []
+                _cb = 0
+                for _row in _kb_rows:
+                    for _btn in ((_row or {}).get("buttons") or []):
+                        _act = (_btn or {}).get("action") or {}
+                        try:
+                            if int(_act.get("type")) == 1:
+                                _cb += 1
+                        except Exception:
+                            pass
+                if _cb and not flags.get("kb_cb_logged"):
+                    flags["kb_cb_logged"] = True
+                    self.logger.warning(
+                        "[QQBOT-BRIDGE] 本条含 %d 个**回调按钮**（action.type=1）：需要平台能把"
+                        "互动事件推给机器人（长连接已订阅 INTERACTION 位；点按钮会先回执、"
+                        "再作为一条消息转给模型）。⚠ 若开放平台后台把“消息推送方式”设成 "
+                        "Webhook 且地址不可达，客户端点按钮会提示「请求第三方失败」——"
+                        "查一下后台的推送方式，或改用 type=2 指令按钮"
+                        "（插件默认已给指令按钮加 enter:true，点一下就自动发送）", _cb)
+            except Exception:
+                pass
             if not flags.get("kb_logged"):
                 flags["kb_logged"] = True
                 if _kb_reason == "upgraded":

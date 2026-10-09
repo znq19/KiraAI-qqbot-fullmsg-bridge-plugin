@@ -416,6 +416,10 @@ class QQOfficialGroupBridge(BasePlugin):
         #: GIF/动图的发送方式：auto（默认：尽量内嵌显示，被平台拒就按文件发）/
         #: image（只按图片发）/ file（原样按文件发，保留动图）
         self.gif_sticker_mode = str(basic.get("gif_sticker_mode", "auto") or "auto").strip().lower()
+        #: ★ 2026-10-10：指令按钮（type=2）默认补 `enter: true` ⇒ **点一下就自动发送**。
+        #:   官方默认 false（点击只把 @bot data 插进输入框，用户容易以为坏了）。
+        #:   仅单聊 + 手机QQ 8983+ 生效；群里/低版本点也只是插进输入框（不会更糟）。
+        self.keyboard_auto_enter = bool(basic.get("keyboard_auto_enter", True))
         #: ★★★ 2026-10-10 新增：**语音条超长自动剪裁**（默认开）。
         #:   用户实测：QQ 官方 bot 语音条上限 **5 分钟（300 秒整）**——多 1 秒都失败、
         #:   退回文件卡片。开着它，插件在转语音条（silk）时按上限截断：
@@ -757,6 +761,11 @@ class QQOfficialGroupBridge(BasePlugin):
         # 语音条上限同步给 audio_silk（同上）
         try:
             self._sync_voice_trim()
+        except Exception:
+            pass
+        # 键盘 enter 默认值同步给 rich_content（同上）
+        try:
+            self._sync_keyboard_enter()
         except Exception:
             pass
         adapters = self._find_adapters()
@@ -2254,6 +2263,14 @@ class QQOfficialGroupBridge(BasePlugin):
         except Exception:
             pass
 
+    def _sync_keyboard_enter(self) -> None:
+        """把 `keyboard_auto_enter` 同步给 rich_content（热改立即生效）。"""
+        try:
+            import rich_content as _rc
+            _rc.set_auto_enter(self.keyboard_auto_enter)
+        except Exception:
+            pass
+
     def _sync_ffmpeg_path(self) -> None:
         """把插件配置的 `ffmpeg_path` 同步给 audio_silk（热改配置也能生效）。
 
@@ -2342,7 +2359,7 @@ class QQOfficialGroupBridge(BasePlugin):
         except Exception:
             pass
         try:
-            logger.info("[QQBOT-BRIDGE] 输入中状态（msg_type=6）**本次未发送**：%s%s",
+            logger.info("[QQBOT-BRIDGE] 【输入中】本次未发送：%s%s",
                         (fmt % args) if (fmt and args) else fmt, "")
         except Exception:
             pass
@@ -2474,7 +2491,7 @@ class QQOfficialGroupBridge(BasePlugin):
             #   这样我们的状态帧与框架的回复处在同一条递增序列里，不可能互相踩。
             seq = self._shared_msg_seq(adapter, target, msg_id)
             route = Route("POST", "/v2/users/{openid}/messages", openid=target)
-            await http.request(route, json={
+            result = await http.request(route, json={
                 "msg_type": 6,
                 "msg_id": msg_id,
                 "msg_seq": seq,
@@ -2487,10 +2504,11 @@ class QQOfficialGroupBridge(BasePlugin):
             # ★ 前 3 次打 INFO（用户常问"输入中到底发没发"）；之后 DEBUG 留痕。
             if self._typing_count <= 3:
                 logger.info(
-                    "[QQBOT-BRIDGE] 输入中状态已发（第 %d 次；msg_type=6，%d 秒，"
-                    "msg_seq=%s）—— 单聊里对方可见「输入中/正在输入…」，群里官方不支持；"
-                    "发失败不影响回复",
+                    "[QQBOT-BRIDGE] 【输入中】已发出（第 %d 次；msg_type=6，%d 秒，"
+                    "msg_seq=%s）—— 单聊里对方可见「正在输入…」，群聊官方不支持；"
+                    "平台响应=%s（平台收下即 200/{}；客户端不显示则属客户端侧）",
                     self._typing_count, self._TYPING_SECONDS, seq,
+                    str(result)[:120],
                 )
             else:
                 logger.debug(
@@ -2503,9 +2521,9 @@ class QQOfficialGroupBridge(BasePlugin):
             if not getattr(self, "_typing_fail_logged", False):
                 self._typing_fail_logged = True
                 logger.warning(
-                    "[QQBOT-BRIDGE] 输入中状态发送失败（%s: %s）—— 平台可能拒收了 "
-                    "msg_type=6；请把本条反馈（不影响正常回复）",
-                    type(exc).__name__, str(exc)[:120])
+                    "[QQBOT-BRIDGE] 【输入中】发送失败（%s: %s）—— 平台拒收了 "
+                    "msg_type=6（把原始报错发来即可定位；不影响正常回复）",
+                    type(exc).__name__, str(exc)[:160])
             else:
                 logger.debug("[QQBOT-BRIDGE] 输入中状态发送失败（忽略）: %s", exc)
 

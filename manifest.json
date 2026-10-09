@@ -1,7 +1,7 @@
 {
   "display_name": "QQ官方bot增强",
   "plugin_id": "qqbot-fullmsg-bridge",
-  "version": "1.6.17",
+  "version": "1.6.18",
   "author": "znq19",
   "description": "让 QQ 官方机器人像普通 QQ 号一样好用：群里不 @ 它也能收到消息、关键词唤醒、随时接话，@ 和私聊里显示的也不再是那串长长的乱码，而是真实昵称，连 @ 都认得出是在叫自己。 现在还认得中文群名、能按名字在群里找人、能让模型发排版好的 markdown 和点一下就用的按钮。 KiraAI 2.x 和 3.0 都自动适配，装上即生效，随时可关。",
   "repo": "https://github.com/znq19/KiraAI-qqbot-fullmsg-bridge-plugin",

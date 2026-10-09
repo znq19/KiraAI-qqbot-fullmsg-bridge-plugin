@@ -31,6 +31,25 @@ except Exception:  # pragma: no cover - 极端情况下退化成 object，功能
     Text = None  # type: ignore
 
 
+#: ★ 2026-10-10：给"指令按钮"（action.type=2）默认补 `action.enter = true`。
+#:
+#: 官方字段语义（《消息按钮》文档 + 官方 SDK 说明）：
+#:   * `action.enter`（bool，**仅单聊 + 手机QQ 8983+** 支持）：点击按钮后
+#:     **直接自动发送 data**，不用用户再按一次发送；
+#:   * 默认 false ⇒ 点击只把 `@bot data` 插进输入框，等用户自己按发送
+#:     （用户实测反馈："点了没反应，像是坏的"）。
+#:
+#: ⇒ 默认打开（可用显式 `"enter": false` 覆盖）。群里或低版本客户端点了也只是
+#:   "插进输入框"，与官方默认行为一致，**不会更糟**。
+_AUTO_ENTER = True
+
+
+def set_auto_enter(enabled: bool) -> None:
+    """插件配置注入（`keyboard_auto_enter`）；幂等，热改立即生效。"""
+    global _AUTO_ENTER
+    _AUTO_ENTER = bool(enabled)
+
+
 #: 键盘上限（官方：内联键盘行列超限报 40034029）
 MAX_KEYBOARD_ROWS = 5
 MAX_BUTTONS_PER_ROW = 5
@@ -179,7 +198,46 @@ def validate_keyboard(raw: str) -> dict:
                     raise KeyboardError(
                         f"按钮 {bid} 的 action.data 超过 {MAX_BUTTON_DATA} 字符"
                     )
-    return {"content": {"rows": rows}}
+    payload_out = {"content": {"rows": rows}}
+    apply_button_defaults(payload_out)          # ★ 指令按钮默认 enter:true
+    return payload_out
+
+
+def apply_button_defaults(payload: dict, auto_enter: bool = None) -> dict:
+    """就地给"指令按钮"（action.type=2）补 `action.enter = true`；返回统计。
+
+    返回 ``{"enter_added": n, "callback": m}``：
+      * ``enter_added``：这次补了几个按钮的 `enter`；
+      * ``callback``：本条里有几个**回调按钮**（type=1）——它们需要平台能把
+        互动事件推到机器人（长连接订阅了 INTERACTION 就行；若后台把"消息推送方式"
+        设成 Webhook 而地址不可达，客户端点按钮会提示「请求第三方失败」）。
+    """
+    stats = {"enter_added": 0, "callback": 0}
+    try:
+        rows = ((payload or {}).get("content") or {}).get("rows") or []
+    except Exception:
+        return stats
+    want = _AUTO_ENTER if auto_enter is None else bool(auto_enter)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for btn in (row.get("buttons") or []):
+            if not isinstance(btn, dict):
+                continue
+            action = btn.get("action")
+            if not isinstance(action, dict):
+                continue
+            try:
+                atype = int(action.get("type"))
+            except Exception:
+                atype = -1
+            if atype == 1:
+                stats["callback"] += 1
+                continue
+            if atype == 2 and want and "enter" not in action:
+                action["enter"] = True
+                stats["enter_added"] += 1
+    return stats
 
 
 # --------------------------------------------------------------------------- #
@@ -327,4 +385,6 @@ KEYBOARD_TAG_DESCRIPTION = (
     "最多 5 行、每行最多 5 个按钮，按钮的 action.data 不超过 100 字符。"
     "必须和 <text> 或 <markdown> 放在同一个 <msg> 里。用户点击后会以消息形式回来。"
     "★ 可以和图片/语音放在同一条 <msg> 里 —— 系统会自动拆成两条（先媒体、后按钮），两边都正常。"
+    "★ 指令按钮（action.type=2）默认带 enter=true：用户点一下就**直接发送**，不用再按发送键"
+    "（仅单聊生效；想让它只插进输入框、由用户自己按发送，就显式写 \"enter\": false）。"
 )

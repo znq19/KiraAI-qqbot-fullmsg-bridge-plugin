@@ -264,6 +264,48 @@ async def main():
           and "typing_skip_disabled" in plugin_off2._typing_skip_done,
           str(plugin_off2._typing_skip_done))
 
+    print("\n[12] ★ 日志可查：统一带【输入中】前缀、成功时带平台响应")
+    import logging as _logging
+
+    class _Cap(_logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.msgs = []
+
+        def emit(self, record):
+            try:
+                self.msgs.append(record.getMessage())
+            except Exception:
+                pass
+
+    _cap = _Cap()
+    _lg = bridge_main.logger          # 插件用的是名为 plugin 的 logger
+    _lg.addHandler(_cap)
+    _lg.setLevel(_logging.INFO)
+    try:
+        _ad12 = Adapter(Client(), {"U12": "MSGID-12"})
+        _p12 = bridge_main.QQOfficialGroupBridge(
+            SimpleNamespace(adapter_mgr=SimpleNamespace(get_adapter=lambda n: _ad12)),
+            {"section_basic": {"enabled": True, "typing_enabled": True}})
+        _p12._maybe_send_typing(event(False, "U12"))
+        for _t in list(_p12._typing_tasks):
+            await _t
+        _sent_msgs = [m for m in _cap.msgs if "【输入中】" in m]
+        check("★★ 成功日志带【输入中】前缀", bool(_sent_msgs), str(_cap.msgs[-2:]))
+        check("★★ 成功日志里带**平台响应**（能看出平台收没收）",
+              any("平台响应" in m for m in _sent_msgs), str(_sent_msgs[:1]))
+        _cap.msgs.clear()
+        _p13 = bridge_main.QQOfficialGroupBridge(
+            SimpleNamespace(adapter_mgr=SimpleNamespace(
+                get_adapter=lambda n: Adapter(Client(), {}))),
+            {"section_basic": {"enabled": True, "typing_enabled": True}})
+        _p13._maybe_send_typing(event(False, "NOPE2"))
+        _skip_msgs = [m for m in _cap.msgs if "【输入中】" in m]
+        check("★★ 未发送的原因也带同一前缀（一条 grep 就能定位）",
+              any("本次未发送" in m for m in _skip_msgs), str(_cap.msgs[-2:]))
+    finally:
+        _lg.removeHandler(_cap)
+
     print(f"\n结果：{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

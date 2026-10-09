@@ -1,4 +1,4 @@
-# KiraAI-qqbot-fullmsg-bridge-plugin/QQ官方bot增强 v1.6.17
+# KiraAI-qqbot-fullmsg-bridge-plugin/QQ官方bot增强 v1.6.18
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/znq19/KiraAI-qqbot-fullmsg-bridge-plugin)
 
@@ -129,6 +129,7 @@ websocket 回调最外层就被丢掉了 —— 报错是它唯一的痕迹。
 | `interaction_enabled` | 开 | 接收按钮点击（INTERACTION_CREATE）：**3 秒内回执** + 转成消息给模型 |
 | `typing_enabled` | 开 | **私聊「输入中…」提示**（msg_type=6）：模型开始思考时给单聊会话发一个状态，用户看到「对方正在输入…」而不是发呆。腾讯官方 SDK 与官方推荐的 Hermes 都有、KiraAI 核心没有。**仅单聊生效**（官方只支持 C2C），同会话 50 秒防抖，发失败不影响回复 |
 | `typing_max_frames` | 2 | **每条入站消息最多花几帧「输入中」**。官方：同一个入站消息最多 4 次被动回复，`msg_type=6` 也算一次 ⇒ 默认 2 帧（+ 1 条回复 = 3，留余量），填 1 更保守，最多 3 |
+| `keyboard_auto_enter` | 开 | **指令按钮默认“点一下就发”**：给 `action.type=2` 的按钮补 `enter: true`（官方默认 false ⇒ 点了只把 `@bot data` 插进输入框，用户常以为按钮坏了）。仅单聊 + 手机QQ 8983+ 生效；群里/低版本仍只是插进输入框。想保留官方默认可在按钮里显式写 `enter: false` |
 | `c2c_stream_enabled` | 开 | **私聊流式消息**（官方 `stream_messages`）：把模型**正在生成的文字**实时写到那条消息上（约 0.5s 就能看到字，来源是提速器的 token 流）。**一条消息就是一条**：多段回复仍然是多条，绝不合并；没有预览就不接管（报文与从前完全一致）。只对单聊纯文本生效，失败一律回退普通发送 |
 | `sticker_tags` | **sticker** | **表情包标签关键词**（逗号分隔）：填进来的词会被补进适配器声明的类型清单（框架里的表情包插件正是看到这个词才注册自己的标签），且这些词对应的元素发送时按**图片**发出（`file_type=1`）。内置表情包用 `sticker`；第三方「增强表情包」是 `<sticker_plus>` 标签，填 `sticker` 即可覆盖。只有确实装了表情包（或加载了名字含该关键词的插件）时才生效 |
 | `gif_sticker_mode` | **auto** | **GIF/动图怎么发**：`auto` = 动图（GIF/WebP）**先原样直传**（平台图片格式现已支持 gif/webp，直传才保动画）→ 被平台拒则转 **APNG** → 静态 PNG → 最后自动按文件发（原图/动图都在，点开可看），被拒过的图 10 分钟内不再试原图；`image` = 跳过原图、直接转档（稳定优先）；`file` = GIF **原样按文件发**（保动图，要点开下载）。**png/jpg 三种模式下都一个字节都不动**；超过图片软限制(20MB)直接按文件发 |
@@ -455,6 +456,38 @@ KIRA_CORE=/path/to/kira_fw BOTPY_PATH=/path/to/botpy python3 tests/smoke_real_co
 ---
 
 ## 更新日志
+
+## 更新日志
+
+<details open>
+<summary><b>v1.6.18</b> — ★★ 指令按钮“点一下就发”+ 回调按钮说明 + 「输入中」日志可查</summary>
+
+### 一、指令按钮默认 `enter: true`（点一下就发送）
+官方默认：`action.type=2` 的指令按钮点击后只把 `@bot data` 插进输入框，要用户自己
+再按一次发送 —— 很多人会以为按钮坏了。现在插件会给这类按钮自动补 `enter: true`：
+点一下就直接发送（仅单聊 + 手机QQ 8983+ 生效；群里/低版本点仍然只是插进输入框，
+与官方默认一致）。想保留官方默认：在按钮里显式写 `enter: false`，或关掉配置
+`keyboard_auto_enter`。
+
+### 二、回调按钮（`type=1`）的说明与排查
+回调按钮需要平台能把互动事件推给机器人：插件已订阅 INTERACTION 订阅位，
+点按钮会先回执（3 秒硬要求）再作为一条消息转给模型。
+⚠ 若开放平台后台把「消息推送方式」设成 Webhook 且地址不可达，客户端点按钮会提示
+「请求第三方失败」（平台去调“第三方”失败）—— 这时要检查后台的推送方式，
+或改用 `type=2` 指令按钮。本条含回调按钮时，日志会给一次说明。
+
+### 三、「输入中」状态日志可查
+日志统一带 `【输入中】` 前缀，便于搜索：
+* `【输入中】已发出（第 N 次；msg_type=6，60 秒，msg_seq=…）—— …平台响应=…` ——
+  平台收下就是 `{}`/200；客户端仍不显示则属客户端侧；
+* `【输入中】本次未发送：<原因>` —— 原因有 配置关 / 不是单聊 / 没有入站 msg_id /
+  50 秒防抖 / 帧数上限 / 适配器未就绪 等。
+
+**测试**：`audit_keyboard_flow.py` 41 → 48 条（enter 注入/显式覆盖/开关/回调按钮告警）；
+`audit_typing_indicator.py` 30 → 33 条（日志前缀、平台响应、门禁诊断文案）。
+全套件全绿。
+
+</details>
 
 <details open>
 <summary><b>v1.6.17</b> — ★★★ 内联键盘修好（自动升格 markdown、不再出现脏占位）+ 私聊「输入中」可诊断 / 额度保护</summary>
